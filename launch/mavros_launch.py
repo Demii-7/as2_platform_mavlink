@@ -27,7 +27,7 @@
 # CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
-"""Launch px4 node."""
+"""Launch the MAVROS node for the autopilot of the platform."""
 
 __authors__ = 'Miguel Fernández Cortizas, Rafael Pérez Seguí'
 __copyright__ = 'Copyright (c) 2022 Universidad Politécnica de Madrid'
@@ -52,6 +52,16 @@ def get_mavros_config_file():
                         'config/mavros_config.yaml')
 
 
+# MAVROS ships one plugin list and one plugin configuration per autopilot
+# family. Loading the PX4 files against an ArduPilot vehicle enables plugins
+# that ArduPilot does not implement and leaves out the ArduPilot specific
+# defaults, so the file set must match the autopilot.
+MAVROS_CONFIG_PREFIX = {
+    'ardupilot': 'apm',
+    'px4': 'px4',
+}
+
+
 def get_node(context, *args, **kwargs) -> list:
     """
     Get node.
@@ -61,11 +71,17 @@ def get_node(context, *args, **kwargs) -> list:
     :return: List with node
     :rtype: list
     """
-    # Get plugin name
+    autopilot = LaunchConfiguration('autopilot').perform(context)
+    if autopilot not in MAVROS_CONFIG_PREFIX:
+        raise RuntimeError(
+            f'Unknown autopilot "{autopilot}", '
+            f'expected one of {sorted(MAVROS_CONFIG_PREFIX)}')
+    prefix = MAVROS_CONFIG_PREFIX[autopilot]
+
     config_yaml = PathJoinSubstitution(
-        [FindPackageShare('mavros'), 'launch', 'px4_config.yaml'])
+        [FindPackageShare('mavros'), 'launch', f'{prefix}_config.yaml'])
     pluginlists_yaml = PathJoinSubstitution(
-        [FindPackageShare('mavros'), 'launch', 'px4_pluginlists.yaml'])
+        [FindPackageShare('mavros'), 'launch', f'{prefix}_pluginlists.yaml'])
     namespace = LaunchConfiguration('namespace').perform(context)
     if namespace == 'mavros':
         ns = 'mavros'
@@ -101,6 +117,12 @@ def generate_launch_description():
             default_value='mavros',
             description='Namespace for the mavros node'
         ),
+        DeclareLaunchArgument(
+            'autopilot',
+            default_value='ardupilot',
+            choices=['ardupilot', 'px4'],
+            description='Autopilot family, selects the MAVROS plugin list and config'
+        ),
         DeclareLaunchArgumentsFromConfigFile(name='mavros_config_file',
                                              source_file=get_mavros_config_file(),
                                              description='Mavros configuration file'),
@@ -109,3 +131,4 @@ def generate_launch_description():
 
         # Include the node launch file
     ])
+    

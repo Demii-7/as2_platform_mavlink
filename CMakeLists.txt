@@ -28,6 +28,7 @@ set(PROJECT_DEPENDENCIES
   tf2_geometry_msgs
   nav_msgs
   mavros_msgs
+  ament_index_cpp
 )
 
 foreach(DEPENDENCY ${PROJECT_DEPENDENCIES})
@@ -42,6 +43,7 @@ include_directories(
 
 # Set source files
 set(SOURCE_CPP_FILES
+  src/autopilot_profile.cpp
   src/mavlink_platform.cpp
 )
 
