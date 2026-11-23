@@ -82,6 +82,14 @@ def get_node(context, *args, **kwargs) -> list:
         [FindPackageShare('mavros'), 'launch', f'{prefix}_config.yaml'])
     pluginlists_yaml = PathJoinSubstitution(
         [FindPackageShare('mavros'), 'launch', f'{prefix}_pluginlists.yaml'])
+    plugin_files = [pluginlists_yaml]
+    # AERPAW change: with aerpaw:=true load only the plugins whose traffic the
+    # AERPAW MAVLink filter allows (config/mavros_aerpaw_pluginlists.yaml).
+    if LaunchConfiguration('aerpaw').perform(context).lower() in ('true', '1'):
+        plugin_files.append(os.path.join(
+            get_package_share_directory('as2_platform_mavlink'),
+            'config', 'mavros_aerpaw_pluginlists.yaml'))
+        print('AERPAW mode: MAVROS plugin allowlist from mavros_aerpaw_pluginlists.yaml')
     namespace = LaunchConfiguration('namespace').perform(context)
     # AERPAW change: the MAVROS node is itself named 'mavros' and publishes
     # under ~/, so namespace '<ns>/mavros' gave /<ns>/mavros/mavros/state.
@@ -105,7 +113,7 @@ def get_node(context, *args, **kwargs) -> list:
             namespace=ns,
             output=LaunchConfiguration('log_output'),
             parameters=[config_yaml,
-                        pluginlists_yaml,
+                        *plugin_files,
                         LaunchConfigurationFromConfigFile(
                             'mavros_config_file',
                             default_file=get_mavros_config_file()),
@@ -138,6 +146,11 @@ def generate_launch_description():
             default_value='ardupilot',
             choices=['ardupilot', 'px4'],
             description='Autopilot family, selects the MAVROS plugin list and config'
+        ),
+        DeclareLaunchArgument(
+            'aerpaw',
+            default_value='false',
+            description='AERPAW mode: load only MAVROS plugins the AERPAW MAVLink filter allows'
         ),
         DeclareLaunchArgument(
             'fcu_url',

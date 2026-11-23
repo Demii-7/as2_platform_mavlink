@@ -14,15 +14,18 @@
 // With aerpaw.enabled the platform does the same:
 //  - arm(true) does not send an arm command, it waits for the safety pilot;
 //  - only HOVER and POSITION control modes are accepted;
-//  - positions are sent as SET_POSITION_TARGET_GLOBAL_INT (mavros
-//    setpoint_raw/global), once per new target plus a slow resend, instead of
-//    a 50 Hz SET_POSITION_TARGET_LOCAL_NED stream;
+//  - mode changes are COMMAND_LONG MAV_CMD_DO_SET_MODE (176), GUIDED or LAND
+//    only (the filter does not accept SET_MODE, and any other mode is fatal);
+//  - positions are sent as COMMAND_INT MAV_CMD_DO_REPOSITION (192), once per
+//    new target plus a slow resend. The filter only accepts velocity-only
+//    SET_POSITION_TARGET_* messages, so position targets are not used;
 //  - targets outside [min_alt, max_alt] are not sent;
 //  - land uses LAND mode and is refused farther than land_radius from home;
 //  - emergency hover holds position in GUIDED, the kill switch lands
 //    (no BRAKE / LOITER mode changes, no forced disarm).
 
 #include <cmath>
+#include <limits>
 #include <string>
 
 #include "as2_platform_mavlink/mavlink_platform.hpp"
@@ -34,6 +37,13 @@ namespace
 {
 constexpr double kEarthRadius = 6378137.0;  // m, WGS84 equatorial
 constexpr double kDegToRad = M_PI / 180.0;
+constexpr uint16_t kMavCmdDoSetMode = 176;
+constexpr uint16_t kMavCmdDoReposition = 192;
+constexpr float kMavModeFlagCustomModeEnabled = 1.0f;
+constexpr uint8_t kMavFrameGlobalRelativeAlt = 3;
+// ArduCopter custom modes the AERPAW filter allows (allowed-copter.jsonc "modes").
+constexpr float kCopterModeGuided = 4.0f;
+constexpr float kCopterModeLand = 9.0f;
 }  // namespace
 
 void MavlinkPlatform::declareAerpawParameters()
@@ -87,8 +97,36 @@ void MavlinkPlatform::setupAerpawCommunications(
     "mavros/global_position/rel_alt", rclcpp::SensorDataQoS(),
     [this](const std_msgs::msg::Float64::SharedPtr msg) {aerpaw_rel_alt_ = msg->data;},
     feedback_options);
-  aerpaw_global_pub_ = this->create_publisher<mavros_msgs::msg::GlobalPositionTarget>(
-    "mavros/setpoint_raw/global", rclcpp::SensorDataQoS());
+  aerpaw_command_int_client_ =
+    this->create_client<mavros_msgs::srv::CommandInt>("mavros/cmd/command_int");
+}
+
+bool MavlinkPlatform::aerpawSetFlightMode(const std::string & flight_mode, bool confirm)
+{
+  float custom_mode = 0.0f;
+  if (flight_mode == "GUIDED") {
+    custom_mode = kCopterModeGuided;
+  } else if (flight_mode == "LAND") {
+    custom_mode = kCopterModeLand;
+  } else {
+    RCLCPP_ERROR(
+      this->get_logger(),
+      "AERPAW mode: mode '%s' is not allowed by the MAVLink filter (GUIDED and LAND only)",
+      flight_mode.c_str());
+    return false;
+  }
+  RCLCPP_INFO(
+    this->get_logger(), "AERPAW mode: %s via MAV_CMD_DO_SET_MODE (custom mode %.0f)",
+    flight_mode.c_str(), custom_mode);
+  if (!sendCommandLong(kMavCmdDoSetMode, kMavModeFlagCustomModeEnabled, custom_mode)) {
+    return false;
+  }
+  if (!confirm) {
+    return true;
+  }
+  return waitFor(
+    [this, &flight_mode]() {return autopilot_mode_ == flight_mode;}, mode_change_timeout_,
+    "flight mode '" + flight_mode + "'");
 }
 
 bool MavlinkPlatform::aerpawSetArmingState(bool state)
@@ -184,36 +222,48 @@ bool MavlinkPlatform::aerpawSendWaypoint(const geometry_msgs::msg::Point & targe
   const double up = aerpaw_last_target_.z - p.z;
   const double lat0 = aerpaw_fix_.latitude * kDegToRad;
 
-  mavros_msgs::msg::GlobalPositionTarget msg;
-  msg.header.stamp = now;
-  msg.coordinate_frame = mavros_msgs::msg::GlobalPositionTarget::FRAME_GLOBAL_REL_ALT;
-  msg.type_mask = mavros_msgs::msg::GlobalPositionTarget::IGNORE_VX |
-    mavros_msgs::msg::GlobalPositionTarget::IGNORE_VY |
-    mavros_msgs::msg::GlobalPositionTarget::IGNORE_VZ |
-    mavros_msgs::msg::GlobalPositionTarget::IGNORE_AFX |
-    mavros_msgs::msg::GlobalPositionTarget::IGNORE_AFY |
-    mavros_msgs::msg::GlobalPositionTarget::IGNORE_AFZ |
-    mavros_msgs::msg::GlobalPositionTarget::IGNORE_YAW |
-    mavros_msgs::msg::GlobalPositionTarget::IGNORE_YAW_RATE;
-  msg.latitude = aerpaw_fix_.latitude + (north / kEarthRadius) / kDegToRad;
-  msg.longitude = aerpaw_fix_.longitude + (east / (kEarthRadius * std::cos(lat0))) / kDegToRad;
-  msg.altitude = static_cast<float>(aerpaw_rel_alt_ + up);
+  const double lat = aerpaw_fix_.latitude + (north / kEarthRadius) / kDegToRad;
+  const double lon =
+    aerpaw_fix_.longitude + (east / (kEarthRadius * std::cos(lat0))) / kDegToRad;
+  const double alt = aerpaw_rel_alt_ + up;
 
-  if (msg.altitude < aerpaw_.min_alt || msg.altitude > aerpaw_.max_alt) {
+  if (alt < aerpaw_.min_alt || alt > aerpaw_.max_alt) {
     RCLCPP_ERROR_THROTTLE(
       this->get_logger(), clk, 2000,
-      "AERPAW mode: target altitude %.1f m is outside %.0f-%.0f m, not sent", msg.altitude,
+      "AERPAW mode: target altitude %.1f m is outside %.0f-%.0f m, not sent", alt,
       aerpaw_.min_alt, aerpaw_.max_alt);
     return false;
   }
+  if (!aerpaw_command_int_client_->service_is_ready()) {
+    RCLCPP_WARN_THROTTLE(
+      this->get_logger(), clk, 2000, "AERPAW mode: mavros/cmd/command_int is not available");
+    return false;
+  }
 
-  aerpaw_global_pub_->publish(msg);
+  // MAV_CMD_DO_REPOSITION in GUIDED: param1 speed (-1 = default), param2 flags
+  // (0: already in GUIDED), param4 yaw (NaN = keep), x/y lat/lon * 1e7, z rel. alt.
+  auto request = std::make_shared<mavros_msgs::srv::CommandInt::Request>();
+  request->broadcast = false;
+  request->frame = kMavFrameGlobalRelativeAlt;
+  request->command = kMavCmdDoReposition;
+  request->current = 0;
+  request->autocontinue = 0;
+  request->param1 = -1.0f;
+  request->param2 = 0.0f;
+  request->param3 = 0.0f;
+  request->param4 = std::numeric_limits<float>::quiet_NaN();
+  request->x = static_cast<int32_t>(std::lround(lat * 1e7));
+  request->y = static_cast<int32_t>(std::lround(lon * 1e7));
+  request->z = static_cast<float>(alt);
+  // Asynchronous: this runs in the command timer and must not block it.
+  aerpaw_command_int_client_->async_send_request(request);
+
   aerpaw_target_sent_ = true;
   aerpaw_last_send_time_ = now;
   if (changed) {
     RCLCPP_INFO(
-      this->get_logger(), "AERPAW mode: waypoint lat %.7f lon %.7f rel_alt %.1f m", msg.latitude,
-      msg.longitude, msg.altitude);
+      this->get_logger(), "AERPAW mode: DO_REPOSITION lat %.7f lon %.7f rel_alt %.1f m", lat, lon,
+      alt);
   }
   return true;
 }

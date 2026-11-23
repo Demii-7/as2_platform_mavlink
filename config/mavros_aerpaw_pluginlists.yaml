@@ -1,0 +1,28 @@
+# MAVROS plugins for AERPAW mode (mavros_launch.py aerpaw:=true).
+#
+# AERPAW's MAVLink filter (C-VM, MAVLink_Filter/filter_safety_checker.py with
+# allowed-copter.jsonc) shuts the vehicle link down on the first message it
+# does not allow. MAVROS' default plugins send some on their own: sys_time sends
+# TIMESYNC and SYSTEM_TIME, home_position sends MAV_CMD_GET_HOME_POSITION (410),
+# param / waypoint / geofence / rallypoint pull lists on connect. That is what
+# broke the link on Nov 10, 2026.
+#
+# Only these plugins are loaded:
+#   sys_status       HEARTBEAT (allowed), REQUEST_DATA_STREAM via set_stream_rate
+#                    (allowed), AUTOPILOT_VERSION request (cmd 520/512, allowed);
+#                    publishes state and battery
+#   command          COMMAND_LONG / COMMAND_INT on request only (the platform sends
+#                    DO_SET_MODE 176, NAV_TAKEOFF 22, DO_REPOSITION 192)
+#   global_position  receive only (GPS, rel_alt)
+#   local_position   receive only (odometry)
+#   imu              receive only
+/**:
+  ros__parameters:
+    plugin_denylist:
+      - '*'
+    plugin_allowlist:
+      - sys_status
+      - command
+      - global_position
+      - local_position
+      - imu

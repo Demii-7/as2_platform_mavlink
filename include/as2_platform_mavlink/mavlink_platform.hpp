@@ -61,6 +61,7 @@
 #include <mavros_msgs/msg/position_target.hpp>
 #include <mavros_msgs/msg/state.hpp>
 #include <mavros_msgs/srv/command_bool.hpp>
+#include <mavros_msgs/srv/command_int.hpp>
 #include <mavros_msgs/srv/command_long.hpp>
 #include <mavros_msgs/srv/command_tol.hpp>
 #include <mavros_msgs/srv/set_mode.hpp>
@@ -231,6 +232,8 @@ private:
   void setupAerpawCommunications(const rclcpp::SubscriptionOptions & feedback_options);
   bool aerpawSetArmingState(bool state);
   bool aerpawLand();
+  /// Mode change as COMMAND_LONG DO_SET_MODE (the filter rejects SET_MODE): GUIDED or LAND only.
+  bool aerpawSetFlightMode(const std::string & flight_mode, bool confirm);
   /// Send @p target (odom ENU) as a global waypoint if it changed or is due for resend.
   bool aerpawSendWaypoint(const geometry_msgs::msg::Point & target);
   bool aerpawSendCommand(const as2_msgs::msg::ControlMode & mode);
@@ -241,7 +244,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr aerpaw_gps_sub_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr aerpaw_gps_raw_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr aerpaw_rel_alt_sub_;
-  rclcpp::Publisher<mavros_msgs::msg::GlobalPositionTarget>::SharedPtr aerpaw_global_pub_;
+  rclcpp::Client<mavros_msgs::srv::CommandInt>::SharedPtr aerpaw_command_int_client_;
   sensor_msgs::msg::NavSatFix aerpaw_fix_;
   double aerpaw_rel_alt_ = 0.0;
   bool aerpaw_fix_received_ = false;

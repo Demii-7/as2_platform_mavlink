@@ -409,6 +409,9 @@ bool MavlinkPlatform::setFlightMode(const std::string & flight_mode, bool confir
   if (autopilot_mode_ == flight_mode) {
     return true;
   }
+  if (aerpaw_.enabled) {
+    return aerpawSetFlightMode(flight_mode, confirm);
+  }
 
   auto request = std::make_shared<mavros_msgs::srv::SetMode::Request>();
   auto response = std::make_shared<mavros_msgs::srv::SetMode::Response>();
